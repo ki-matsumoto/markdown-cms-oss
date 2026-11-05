@@ -5,13 +5,11 @@ kind: website
 kind_label: サンプル
 accent: '#375c94'
 eyebrow: OSS / GITHUB PAGES
-hero_title: 'Markdownで書いて、
-
-  そのまま公開。'
+hero_title: Markdownで書いてそのまま公開できるトップ画面のタイトル'
 description: MITライセンスのOSS版です。GitHubへのpushで更新し、GitHub Pagesから配信します。
 subtitle: OSS版・GitHub更新
 hero_note: OSS版 · GitHub更新 · GitHub Pages配信
 about: GitHub Actionsで生成し、GitHub Pagesから配信するOSS版のサンプルサイトです。
-hero_image: sample/hero.webp
+hero_image: sample/festival.webp
 theme_switcher: false
 template: natural
