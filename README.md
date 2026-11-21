@@ -19,7 +19,7 @@ https://oosawak.github.io/markdown-cms-oss/
 
 1. このリポジトリを **Use this template** で自分のアカウントにコピーします（fork でも構いません）
 2. リポジトリの Settings → Pages で、公開元を `main` ブランチの `/docs` フォルダに設定します
-3. Actions が有効になっていることを確認します（テンプレートから作った場合は承認が必要なことがあります）
+3. Actions が有効になっていることを確認します（テンプレートから作った場合は承認が必要なことがあります。**fork した場合は Actions 自体が無効になっている**ので、Actions タブで有効にしてください。有効にしないとビルドが動かず、サイトは更新されません）
 4. サイト設定を書き換えます: `content/sites/sample.yml`（サイト名、紹介文、色、ヒーロー画像）
 5. サンプル記事（`content/posts/sample/`）を自分の記事に置き換え、画像は `content/images/sample/` に置きます
 6. push すると数分でサイトに反映されます
