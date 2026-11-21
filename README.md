@@ -24,7 +24,15 @@ https://oosawak.github.io/markdown-cms-oss/
 5. サンプル記事（`content/posts/sample/`）を自分の記事に置き換え、画像は `content/images/sample/` に置きます
 6. push すると数分でサイトに反映されます
 
-サイトID（初期値は `sample`）を変えたい場合は、フォルダ名（`content/posts/<id>/`、`content/images/<id>/`）と `content/sites/<id>.yml` を揃えたうえで、`scripts/build.py` 冒頭の `SITE_ID` の既定値、または Workflow の環境変数 `SITE_ID` を同じ値にしてください。
+サイトID（初期値は `sample`）は、まず `sample` のまま使うのがおすすめです。サイト名・紹介文・色は設定ファイルで自由に変えられます。
+サイトIDを変えたい場合は、フォルダ名（`content/posts/<id>/`、`content/images/<id>/`）と `content/sites/<id>.yml` を揃えたうえで、`scripts/build.py` 冒頭の `SITE_ID` の既定値、または Workflow の環境変数 `SITE_ID` を同じ値にしてください。
+ただし、組み込みテンプレート（設定ファイルの `template`）とテーマ切り替えは、サイトID `sample` 用です。IDを変えた状態で `natural` 以外のテンプレートを指定するとビルドがエラーになり、サイト全体が更新されなくなります。
+
+### 反映されないときは
+
+- リポジトリの Actions タブで「Build site and commit generated files」が成功しているか確認してください。失敗していると、記事もデザインも反映されません。エラーの内容は実行ログで見られます
+- Settings → Pages の公開元が `main` ブランチの `/docs` フォルダになっているか確認してください
+- ビルドが走るのは `content/`・`scripts/`・`assets/` などを変更したときだけです。それ以外の場所だけを変えても再ビルドされません
 
 サンプルサイト（サイトID `sample`）ではヘッダーの「テーマ」からナチュラル・Apple風・Notion風・Dala風・dope.security風を切り替えられます。
 選択はブラウザに保存され、記事ページにも反映されます。この切り替えUIはサンプル専用です。
