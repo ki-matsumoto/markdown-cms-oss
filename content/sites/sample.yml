@@ -14,3 +14,15 @@ hero_image: sample/festival.webp
 theme_switcher: false
 template: natural
 
+# お問い合わせフォーム（microForm）。有効にすると contact.html が生成され、
+# サイトのフッターに「お問い合わせ」リンクが出ます。
+# endpoint は自分の microForm Worker の URL に差し替えてください。
+# sitekey は自分の Turnstile のサイトキーを入れてください（サイトキーは
+# 公開情報です。シークレットキーはここには書かず、Worker の secret に入れます）。
+# 宛先メールアドレスはここには書かず、Worker 側のサイト登録で決めます。
+contact_form:
+  enabled: false
+  endpoint: https://microform.oosawak.workers.dev/submit
+  site_id: sample
+  sitekey: 0x4AAAAAAF-NLXBTZZUvCKR-
+  privacy_url: ''

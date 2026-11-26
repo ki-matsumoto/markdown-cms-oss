@@ -19,12 +19,23 @@ https://oosawak.github.io/markdown-cms-oss/
 
 1. このリポジトリを **Use this template** で自分のアカウントにコピーします（fork でも構いません）
 2. リポジトリの Settings → Pages で、公開元を `main` ブランチの `/docs` フォルダに設定します
-3. Actions が有効になっていることを確認します（テンプレートから作った場合は承認が必要なことがあります）
+3. Actions が有効になっていることを確認します（テンプレートから作った場合は承認が必要なことがあります。**fork した場合は Actions 自体が無効になっている**ので、Actions タブで有効にしてください。有効にしないとビルドが動かず、サイトは更新されません）
+   - fork の有効化: Actions タブを開き、「Workflows aren't being run on this forked repository」と表示されていたら **「I understand my workflows, go ahead and enable them」** を押します。表示がない場合は、左の一覧で「Build site and commit generated files」を選び、**「Enable workflow」** を押します
+   - あわせて Settings → Actions → General の **「Workflow permissions」** を **「Read and write permissions」** にして保存してください。読み取り専用だと、ビルドできても生成物の commit で失敗します（「Actions permissions」の「Allow all actions and reusable workflows」は別設定で、それだけでは足りません）
 4. サイト設定を書き換えます: `content/sites/sample.yml`（サイト名、紹介文、色、ヒーロー画像）
 5. サンプル記事（`content/posts/sample/`）を自分の記事に置き換え、画像は `content/images/sample/` に置きます
 6. push すると数分でサイトに反映されます
 
-サイトID（初期値は `sample`）を変えたい場合は、フォルダ名（`content/posts/<id>/`、`content/images/<id>/`）と `content/sites/<id>.yml` を揃えたうえで、`scripts/build.py` 冒頭の `SITE_ID` の既定値、または Workflow の環境変数 `SITE_ID` を同じ値にしてください。
+サイトID（初期値は `sample`）は、まず `sample` のまま使うのがおすすめです。サイト名・紹介文・色は設定ファイルで自由に変えられます。
+サイトIDを変えたい場合は、フォルダ名（`content/posts/<id>/`、`content/images/<id>/`）と `content/sites/<id>.yml` を揃えたうえで、`scripts/build.py` 冒頭の `SITE_ID` の既定値、または Workflow の環境変数 `SITE_ID` を同じ値にしてください。
+ただし、組み込みテンプレート（設定ファイルの `template`）とテーマ切り替えは、サイトID `sample` 用です。IDを変えた状態で `natural` 以外のテンプレートを指定するとビルドがエラーになり、サイト全体が更新されなくなります。
+
+### 反映されないときは
+
+- リポジトリの Actions タブで「Build site and commit generated files」が成功しているか確認してください。失敗していると、記事もデザインも反映されません。エラーの内容は実行ログで見られます
+- よくある失敗が画像のパスの不一致です。設定ファイルの `hero_image` や記事の `cover` に書いたパスと、`content/images/` に置いた実際のファイル名が一致していないと、ビルドが失敗します。画像を差し替えるときは、置く場所とファイル名まで揃えてください（前の画像ファイルを消す場合も、参照が残っていないか確認してください）
+- Settings → Pages の公開元が `main` ブランチの `/docs` フォルダになっているか確認してください
+- ビルドが走るのは `content/`・`scripts/`・`assets/` などを変更したときだけです。それ以外の場所だけを変えても再ビルドされません
 
 サンプルサイト（サイトID `sample`）ではヘッダーの「テーマ」からナチュラル・Apple風・Notion風・Dala風・dope.security風を切り替えられます。
 選択はブラウザに保存され、記事ページにも反映されます。この切り替えUIはサンプル専用です。

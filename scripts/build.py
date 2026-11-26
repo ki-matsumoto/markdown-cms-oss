@@ -9,7 +9,7 @@ import re
 import shutil
 import hashlib
 import os
-from html import escape
+from html import escape, unescape
 from functools import lru_cache
 from PIL import Image, ImageOps
 import mistune
@@ -29,6 +29,18 @@ CACHED_I18N=json.loads(TRANSLATION_CACHE.read_text(encoding='utf-8')) if TRANSLA
 
 def source_hash(obj):
     return hashlib.sha256(json.dumps(obj,sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
+
+def sync_site_i18n_hash(site):
+    # Keep the manual English registration for the site in step with the
+    # current settings: when the settings change, re-register the existing
+    # English texts under the new source hash so the build never loses the
+    # English site name (and never fails) just because the YAML was edited.
+    entry=MANUAL_I18N.get('sites',{}).get(SITE_ID)
+    if not entry:return
+    current=source_hash({k:v for k,v in site.items() if k not in ('design','template','theme_switcher','contact_form')})
+    if entry.get('source_hash')!=current:
+        entry['source_hash']=current
+        (CONTENT/'i18n/en.json').write_text(json.dumps(MANUAL_I18N,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 
 def translated(group,key,original):
     fallback=MANUAL_I18N.get(group,{}).get(key,{})
@@ -61,10 +73,188 @@ def article_attribute(tag,name,value):
             # Data, javascript, protocol-relative, and other executable URLs are forbidden.
             if value.startswith('#'):return True
             return value.startswith(('https://','http://','mailto:'))
+    if tag=='code':
+        # Only the embed marker survives; expand_embeds consumes it.
+        return name=='class' and value=='language-embed'
     return False
 
+def embed_src_prefix():
+    # Embeds may only frame pages on the site's own origin (from SITE_URL),
+    # never third-party pages.
+    site_url=os.environ.get('SITE_URL','')
+    if site_url.startswith(('https://','http://')):
+        return '/'.join(site_url.split('/')[:3])+'/'
+    return ''
+
+EMBED_CLASSES=set()
+
+def expand_embeds(html_text):
+    # A fenced ```embed block in the source (the URL on the first line, an
+    # optional WxH size on the second, an optional width like 70% on the
+    # third) becomes a responsive iframe. Raw HTML stays escaped by design,
+    # so this block is the only way to embed, and only URLs on the site's
+    # own origin are expanded; anything else is dropped. Without this
+    # feature the block simply renders as code. Sizing goes through a
+    # generated CSS class (embed_style_rules), because the page CSP forbids
+    # inline styles. The iframe carries a sandbox that still allows
+    # scripts and same-origin treatment, but blocks dialogs, popups, form
+    # submission and top navigation by the embedded page.
+    def repl(match):
+        lines=[line.strip() for line in unescape(match.group(1)).splitlines() if line.strip()]
+        if not lines:return ''
+        url=lines[0]
+        prefix=embed_src_prefix()
+        if not prefix or not url.startswith(prefix):return ''
+        w,h=4,3
+        if len(lines)>1:
+            size=re.fullmatch(r'(\d+)x(\d+)',lines[1])
+            if size and int(size.group(1))>0 and int(size.group(2))>0:
+                w,h=int(size.group(1)),int(size.group(2))
+        width_pct=100
+        if len(lines)>2:
+            pct=re.fullmatch(r'(\d+)%',lines[2])
+            if pct and 10<=int(pct.group(1))<=100:
+                width_pct=int(pct.group(1))
+        cls=f'embed-{w}-{h}-{width_pct}'
+        EMBED_CLASSES.add((cls,w,h,width_pct))
+        return (f'<iframe class="{cls}" src="{escape(url,quote=True)}" '
+                f'sandbox="allow-scripts allow-same-origin" '
+                f'loading="lazy" allowfullscreen></iframe>')
+    return re.sub(r'<pre><code class="language-embed">(.*?)</code></pre>',repl,html_text,flags=re.S)
+
+def embed_style_rules():
+    rules=['iframe[class^="embed-"]{border:0;display:block;margin:22px auto;background:#000;border-radius:10px}']
+    for cls,w,h,pct in sorted(EMBED_CLASSES):
+        rules.append(f'.{cls}{{width:{pct}%;aspect-ratio:{w} / {h}}}')
+    return '\n'.join(rules)+'\n'
+
+def contact_form_settings(site):
+    cf=site.get('contact_form')
+    if cf is None:return None
+    if not isinstance(cf,dict):raise ValueError('contact_form must be a mapping')
+    if not cf.get('enabled'):return None
+    for key in ('endpoint','site_id','sitekey'):
+        if not cf.get(key):raise ValueError(f'contact_form.{key} is required when contact_form.enabled is true')
+    endpoint=str(cf['endpoint']).strip()
+    if not endpoint.startswith('https://'):raise ValueError('contact_form.endpoint must be an HTTPS URL')
+    return {'endpoint':endpoint,'site_id':str(cf['site_id']),'sitekey':str(cf['sitekey']),'privacy_url':str(cf.get('privacy_url','') or '')}
+
+def worker_origin(endpoint):
+    return '/'.join(endpoint.split('/')[:3])
+
+# The form fields mirror the microForm Worker's base set (name/email/subject/message).
+CONTACT_FIELDS=[
+    {'name':'name','label':'お名前','type':'text','required':True,'max':100},
+    {'name':'email','label':'メールアドレス','type':'email','required':True,'max':254},
+    {'name':'subject','label':'件名','type':'text','required':False,'max':200},
+    {'name':'message','label':'本文','type':'textarea','required':True,'max':5000},
+]
+
+def contact_field_html(f):
+    req=' required' if f['required'] else ''
+    mark='（必須）' if f['required'] else ''
+    if f['type']=='textarea':
+        control=f'<textarea id="mf-{f["name"]}" name="{f["name"]}" data-mf-field rows="8" maxlength="{f["max"]}"{req}></textarea>'
+    else:
+        control=f'<input id="mf-{f["name"]}" name="{f["name"]}" data-mf-field type="{f["type"]}" maxlength="{f["max"]}"{req}>'
+    return f'<div class="mf-row"><label for="mf-{f["name"]}">{escape(f["label"])}{mark}</label>{control}</div>'
+
+def contact_style_rules():
+    return ('.contact-wrap{max-width:760px}\n'
+      '.mf-lead{color:var(--muted);font-size:13px}\n'
+      '.mf-form{margin-top:22px}\n'
+      '.mf-row{margin-bottom:18px}\n'
+      '.mf-row label{display:block;font-weight:700;font-size:13px;margin-bottom:6px}\n'
+      '.mf-row input,.mf-row textarea{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff;font:inherit}\n'
+      '.mf-hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}\n'
+      '.mf-form .cf-turnstile{margin:18px 0}\n'
+      '.mf-status{margin-top:14px;font-size:13px;color:var(--accent)}\n'
+      '.mf-privacy{margin-top:20px;font-size:12px}\n')
+
+def contact_page(site,cf):
+    # A standalone form page, like the static article pages. Sending is done
+    # with fetch from assets/microform.js, so form-action stays 'none' and
+    # only connect-src gains the Worker origin (plus Turnstile).
+    origin=worker_origin(cf['endpoint'])
+    csp=("default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; img-src 'self' data:; "
+         f"connect-src 'self' https://challenges.cloudflare.com {origin}; frame-src https://challenges.cloudflare.com; "
+         "object-src 'none'; base-uri 'self'; form-action 'none'")
+    fields=''.join(contact_field_html(f) for f in CONTACT_FIELDS)
+    privacy=''
+    if cf['privacy_url']:
+        privacy=f'<p class="mf-privacy"><a href="{escape(cf["privacy_url"],quote=True)}" rel="noopener">個人情報の取り扱いについて</a></p>'
+    config=json.dumps({'endpoint':cf['endpoint'],'siteId':cf['site_id'],'sitekey':cf['sitekey']},ensure_ascii=False).replace('</','<\\/')
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="{csp}">
+<title>お問い合わせ | {escape(site['name'])}</title><link rel="stylesheet" href="assets/style.css"></head>
+<body><main class="container contact-wrap">
+<p><a class="backlink" href="./">← {escape(site['name'])}</a></p>
+<h1>お問い合わせ</h1>
+<p class="mf-lead">{escape(site['name'])}へのお問い合わせは、こちらのフォームからどうぞ。内容はメールで運営者へ届きます。</p>
+<form id="microform" class="mf-form paper" method="post" action="#">
+{fields}
+<div class="mf-hp" aria-hidden="true"><label>この欄は入力しないでください<input type="text" name="hp" tabindex="-1" autocomplete="off"></label></div>
+<div class="cf-turnstile" data-sitekey="{escape(cf['sitekey'],quote=True)}"></div>
+<button type="submit" class="pillbutton">送信する</button>
+<p class="mf-status" role="status"></p>
+</form>
+{privacy}
+</main>
+<script type="application/json" id="microform-config">{config}</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+<script src="assets/microform.js" defer></script>
+</body></html>"""
+
 def sanitize_article_html(content):
-    return bleach.clean(content,tags=ALLOWED_MARKDOWN_TAGS,attributes=article_attribute,protocols=['http','https','mailto','data'],strip=True)
+    return expand_embeds(bleach.clean(content,tags=ALLOWED_MARKDOWN_TAGS,attributes=article_attribute,protocols=['http','https','mailto','data'],strip=True))
+
+def save_image_file(rel, out_path, kind='detail'):
+    rel=rel.strip().lstrip('/')
+    filepath=(IMAGES/rel).resolve()
+    if not filepath.is_relative_to(IMAGES.resolve()) or not filepath.exists():
+        raise ValueError(f'Image not found or unsafe: {rel}')
+    with Image.open(filepath) as src:
+        im=ImageOps.exif_transpose(src).convert('RGB')
+        if kind=='thumb':
+            im=ImageOps.fit(im,COLOR_THUMB,method=Image.Resampling.LANCZOS,centering=(.5,.48))
+            quality=74
+        else:
+            im.thumbnail((1540,1540),Image.Resampling.LANCZOS)
+            quality=83
+        out_path.parent.mkdir(parents=True,exist_ok=True)
+        im.save(out_path,format='WEBP',quality=quality,method=5)
+
+def article_page(detail, origin, site_name):
+    # A static, search-engine-readable copy of the article. The interactive
+    # site stays the hash-routed app; this page carries the same text with
+    # per-article title, description and OGP, and links back to the app.
+    title=detail['title']
+    desc=str(detail.get('summary','')).replace('\n',' ')
+    page_url=origin+f"posts/{detail['slug']}.html"
+    og_image=origin+f"og/{detail['slug']}.webp"
+    source=''
+    if detail.get('embed_url'):
+        source=f'<p>元の投稿：<a href="{escape(detail["embed_url"],quote=True)}" rel="noopener" target="_blank">{escape(detail.get("embed_platform",""))}</a></p>'
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(title)} | {escape(site_name)}</title>
+<meta name="description" content="{escape(desc,quote=True)}">
+<link rel="canonical" href="{page_url}">
+<meta property="og:type" content="article"><meta property="og:site_name" content="{escape(site_name,quote=True)}">
+<meta property="og:title" content="{escape(title,quote=True)}">
+<meta property="og:description" content="{escape(desc,quote=True)}">
+<meta property="og:url" content="{page_url}">
+<meta property="og:image" content="{og_image}">
+<meta name="twitter:card" content="summary_large_image">
+<style>body{{font-family:system-ui,-apple-system,'Hiragino Sans','Noto Sans JP',sans-serif;margin:0;background:#f8f7f1;color:#2b2620}}main{{max-width:760px;margin:0 auto;padding:20px 16px 48px}}img.cover{{width:100%;height:auto;border-radius:12px}}h1{{font-size:26px;line-height:1.4;margin:16px 0 6px}}.meta{{color:#8a7a63;font-size:13px}}article{{line-height:1.9;font-size:16px}}article img{{max-width:100%;height:auto}}a{{color:#8d5b2b}}</style>
+</head><body><main>
+<p><a href="{origin}">{escape(site_name)}</a></p>
+<img class="cover" src="../og/{detail['slug']}.webp" alt="{escape(detail['cover'].get('alt',title),quote=True)}">
+<h1>{escape(title)}</h1>
+<p class="meta">{escape(str(detail.get('date','')))} ／ {escape(str(detail.get('category','')))}</p>
+<article>{detail['html']}</article>
+{source}
+<p><a href="{escape(detail['url'],quote=True)}">サイトでこの記事を開く</a></p>
+</main></body></html>"""
 
 @lru_cache(maxsize=200)
 def image_uri(rel: str, kind: str) -> tuple[str,int]:
@@ -86,6 +276,12 @@ def image_uri(rel: str, kind: str) -> tuple[str,int]:
     return 'data:image/webp;base64,'+base64.b64encode(content).decode('ascii'),len(content)
 
 class InlineImageRenderer(mistune.HTMLRenderer):
+    def block_code(self,code:str,info:str|None=None)->str:
+        # Only the ```embed fence is marked; expand_embeds turns it into an
+        # iframe later. Other fences render exactly as before.
+        if info and info.strip()=='embed':
+            return f'<pre><code class="language-embed">{escape(code)}</code></pre>\n'
+        return super().block_code(code,info)
     def image(self,text:str,url:str,title:str|None=None)->str:
         # Only locally managed images are embedded; no remote/network images from Markdown.
         uri,_=image_uri(url,'detail')
@@ -162,18 +358,30 @@ def design_settings(site):
         raise ValueError('Built-in templates and theme_switcher currently require SITE_ID=sample')
     return template,switcher
 
-def shell():
+def shell(origin=''):
     site_titles={'bakery':'haru no tane bakery','town':'みどり野町','fruit':'果実日和','gourmet':'山形グルメ案内'}
     settings=yaml.safe_load((CONTENT/'sites'/f'{SITE_ID}.yml').read_text(encoding='utf-8'))
     template,switcher=design_settings(settings)
     title=site_titles.get(SITE_ID) or settings['name']
+    site_desc=str(settings.get('description','')).replace('\n',' ')
+    og=''
+    if origin:
+        og=(f'<meta property="og:type" content="website"><meta property="og:site_name" content="{escape(title,quote=True)}">'
+            f'<meta property="og:title" content="{escape(title,quote=True)}">'
+            f'<meta property="og:description" content="{escape(site_desc,quote=True)}">'
+            f'<meta property="og:url" content="{origin}">'
+            f'<meta property="og:image" content="{origin}og/hero.webp">'
+            f'<meta name="twitter:card" content="summary_large_image">'
+            f'<link rel="canonical" href="{origin}">')
     portal_url=os.environ.get('PORTAL_URL','').strip()
     if portal_url and (not portal_url.startswith('https://') or '"' in portal_url or '<' in portal_url or '\n' in portal_url):
         raise ValueError('PORTAL_URL must be a safe HTTPS URL')
     attrs=f'data-default="{SITE_ID}" data-root="./" data-mode="site" data-site-id="{SITE_ID}" data-portal-url="{escape(portal_url,quote=True)}"'
     attrs+=f' data-template="{template}" data-theme-switcher="{str(switcher).lower()}"'
+    cf=contact_form_settings(settings)
+    connect_src="'self'"+(' '+worker_origin(cf['endpoint']) if cf else '')
     favicon='<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">' if SITE_ID=='sample' else ''
-    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Markdownから生成した静的JSONサイト"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'"><title>{escape(title)}</title>{favicon}<link rel="stylesheet" href="assets/style.css"></head><body><div id="app" {attrs}><p class="loading">読み込み中…</p></div><noscript>JavaScriptを有効にしてください。</noscript><script src="assets/app.js" defer></script></body></html>"""
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="{escape(site_desc,quote=True)}">{og}<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src {connect_src}; object-src 'none'; base-uri 'self'; form-action 'none'"><title>{escape(title)}</title>{favicon}<link rel="stylesheet" href="assets/style.css"></head><body><div id="app" {attrs}><p class="loading">読み込み中…</p></div><noscript>JavaScriptを有効にしてください。</noscript><script src="assets/app.js" defer></script></body></html>"""
 
 def generate():
     if DIST.exists():shutil.rmtree(DIST)
@@ -185,6 +393,9 @@ def generate():
     required(site,['id','name','kind','hero_title','description','accent'],cfgpath)
     if site['id']!=SITE_ID:raise ValueError('Site ID mismatch')
     design_settings(site)
+    cf=contact_form_settings(site)
+    if cf:
+        shutil.copy2(ROOT/'assets/microform.js',DIST/'assets/microform.js')
     if site.get('design'):
         design_path=(CONTENT/site['design']).resolve()
         if not design_path.is_relative_to(CONTENT.resolve()):
@@ -201,7 +412,8 @@ def generate():
                 for selectors,body in re.findall(r'([^{}]+)\{([^{}]*)\}',re.sub(r'/\*.*?\*/','',css,flags=re.S)):
                     scoped=','.join(scope if selector.strip()==':root' else scope+' '+selector.strip() for selector in selectors.split(','))
                     output.write(scoped+'{'+body+'}\n')
-    site['i18n']={'en':translated('sites',SITE_ID,{k:v for k,v in site.items() if k not in ('design','template','theme_switcher')})}
+    sync_site_i18n_hash(site)
+    site['i18n']={'en':translated('sites',SITE_ID,{k:v for k,v in site.items() if k not in ('design','template','theme_switcher','contact_form')})}
     if site.get('hero_image'):
         site['hero_image_src']=image_uri(site['hero_image'],'detail')[0]
         site['hero_thumbnail']={'src':image_uri(site['hero_image'],'thumb')[0], 'alt':site['name'], 'mime':'image/webp'}
@@ -245,6 +457,9 @@ def generate():
         detail={**summary,'cover':{'src':image_uri(fm['cover'],'detail')[0], 'alt':cover_alt,'mime':'image/webp'},
                 'markdown':body,'html':sanitize_article_html(md(body)),'i18n':{'en':english_detail}}
         write_json(DIST/'data/posts'/SITE_ID/f'{slug}.json',detail)
+        save_image_file(fm['cover'], DIST/'og'/f'{slug}.webp')
+        (DIST/'posts').mkdir(parents=True,exist_ok=True)
+        (DIST/'posts'/f'{slug}.html').write_text(article_page(detail, origin, site['name']),encoding='utf-8')
         summaries.append(summary)
     summaries.sort(key=lambda x:(x['date'],x['id']),reverse=True)
     feed={'version':1,'schema':'static-site-feed/v1','schema_version':'1.1.0','languages':['ja','en'],
@@ -255,7 +470,28 @@ def generate():
             'entries':summaries, 'hero_image_src':site.get('hero_image_src','')}
     write_json(DIST/'data/portal.json',portal)
     write_json(DIST/'data/portal-local.json',portal)
-    (DIST/'index.html').write_text(shell(),encoding='utf-8')
+    if site.get('hero_image'):
+        save_image_file(site['hero_image'], DIST/'og/hero.webp')
+    sm_lines=['<?xml version="1.0" encoding="UTF-8"?>','<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    def sm_entry(loc,lastmod=''):
+        lm=f'<lastmod>{lastmod}</lastmod>' if lastmod else ''
+        return f'<url><loc>{escape(loc)}</loc>{lm}</url>'
+    sm_lines.append(sm_entry(origin, summaries[0]['date'] if summaries else ''))
+    if cf:
+        sm_lines.append(sm_entry(origin+'contact.html'))
+    for s in summaries:
+        sm_lines.append(sm_entry(origin+f"posts/{s['slug']}.html", s['date']))
+    sm_lines.append('</urlset>')
+    (DIST/'sitemap.xml').write_text('\n'.join(sm_lines)+'\n',encoding='utf-8')
+    (DIST/'index.html').write_text(shell(origin),encoding='utf-8')
+    if cf:
+        (DIST/'contact.html').write_text(contact_page(site,cf),encoding='utf-8')
+    if EMBED_CLASSES:
+        with (DIST/'assets/style.css').open('a',encoding='utf-8') as css:
+            css.write(embed_style_rules())
+    if cf:
+        with (DIST/'assets/style.css').open('a',encoding='utf-8') as css:
+            css.write(contact_style_rules())
     print(f'Built independent {SITE_ID}: {len(summaries)} items at {origin}')
 
 if __name__=='__main__':generate()
