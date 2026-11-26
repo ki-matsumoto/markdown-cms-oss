@@ -30,6 +30,18 @@ CACHED_I18N=json.loads(TRANSLATION_CACHE.read_text(encoding='utf-8')) if TRANSLA
 def source_hash(obj):
     return hashlib.sha256(json.dumps(obj,sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
 
+def sync_site_i18n_hash(site):
+    # Keep the manual English registration for the site in step with the
+    # current settings: when the settings change, re-register the existing
+    # English texts under the new source hash so the build never loses the
+    # English site name (and never fails) just because the YAML was edited.
+    entry=MANUAL_I18N.get('sites',{}).get(SITE_ID)
+    if not entry:return
+    current=source_hash({k:v for k,v in site.items() if k not in ('design','template','theme_switcher','contact_form')})
+    if entry.get('source_hash')!=current:
+        entry['source_hash']=current
+        (CONTENT/'i18n/en.json').write_text(json.dumps(MANUAL_I18N,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+
 def translated(group,key,original):
     fallback=MANUAL_I18N.get(group,{}).get(key,{})
     if fallback.get('source_hash')!=source_hash(original):
@@ -400,6 +412,7 @@ def generate():
                 for selectors,body in re.findall(r'([^{}]+)\{([^{}]*)\}',re.sub(r'/\*.*?\*/','',css,flags=re.S)):
                     scoped=','.join(scope if selector.strip()==':root' else scope+' '+selector.strip() for selector in selectors.split(','))
                     output.write(scoped+'{'+body+'}\n')
+    sync_site_i18n_hash(site)
     site['i18n']={'en':translated('sites',SITE_ID,{k:v for k,v in site.items() if k not in ('design','template','theme_switcher','contact_form')})}
     if site.get('hero_image'):
         site['hero_image_src']=image_uri(site['hero_image'],'detail')[0]

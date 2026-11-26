@@ -59,7 +59,7 @@ jobs:
           cp dist/preview.html docs/preview.html
       - name: Commit generated changes
         run: |
-          git add -A data docs preview.html
+          git add -A data docs preview.html content/i18n/en.json
           if git diff --cached --quiet; then
             echo 'No generated changes.'
           else
